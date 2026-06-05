@@ -3,6 +3,11 @@ import numpy as np
 import statsmodels.api as sm
 import statsmodels.formula.api as smf
 
+try:
+    import xgboost as xgb
+except ImportError:  # pragma: no cover
+    xgb = None
+
 
 class PoissonBaselineModel:
     """Poisson GLM baseline using team and opponent fixed effects and home indicator.
@@ -127,3 +132,91 @@ class PoissonBaselineModel:
         lambda_b = _predict(team_b, team_a, b_home)
 
         return lambda_a, lambda_b
+
+    def calculate_training_residuals(self, training_data: pd.DataFrame) -> pd.DataFrame:
+        if not isinstance(training_data, pd.DataFrame):
+            raise ValueError('training_data must be a pandas DataFrame')
+
+        required = {'team', 'opponent', 'goals', 'home_indicator'}
+        if not required.issubset(training_data.columns):
+            missing = required - set(training_data.columns)
+            raise ValueError(f'missing required columns: {missing}')
+
+        if self.result is None and not getattr(self, 'fallback', False):
+            raise RuntimeError('Model must be fit before calculating residuals')
+
+        df = training_data.copy()
+
+        if getattr(self, 'fallback', False) or self.result is None:
+            def _expected(row):
+                team = row['team']
+                is_home = bool(row['home_indicator'])
+                if is_home:
+                    val = self.fallback_home_means.get(team)
+                else:
+                    val = self.fallback_away_means.get(team)
+                if val is None:
+                    h = self.fallback_home_means.get(team)
+                    a = self.fallback_away_means.get(team)
+                    if h is not None and a is not None:
+                        val = 0.5 * (h + a)
+                    else:
+                        val = self.fallback_global_mean
+                return float(max(val, 0.1))
+
+            df['expected_goals'] = df.apply(_expected, axis=1)
+        else:
+            row_df = pd.DataFrame({
+                'team': df['team'],
+                'opponent': df['opponent'],
+                'home_indicator': df['home_indicator'].astype(int),
+            })
+            try:
+                expected = np.asarray(self.result.predict(row_df), dtype=float)
+                expected = np.clip(expected, 0.0, None)
+            except Exception:
+                expected = np.full(len(df), max(self.global_mean, 0.1), dtype=float)
+
+            df['expected_goals'] = expected
+            unseen_mask = ~(
+                df['team'].isin(self.seen_teams) & df['opponent'].isin(self.seen_teams)
+            )
+            if unseen_mask.any():
+                df.loc[unseen_mask, 'expected_goals'] = max(self.global_mean, 0.1)
+
+        df['poisson_residual'] = df['goals'] - df['expected_goals']
+        return df
+
+
+class XGBoostResidualModel:
+    """XGBoost regression model for predicting Poisson residual adjustments."""
+
+    def __init__(self):
+        if xgb is None:
+            raise ImportError('xgboost is required for XGBoostResidualModel. Install it with `pip install xgboost`.')
+        self.model = xgb.XGBRegressor(
+            max_depth=35,
+            learning_rate=0.08,
+            n_estimators=300,
+            subsample=0.8,
+            colsample_bytree =0.8,
+            objective='reg:squarederror',
+            random_state=42,
+        )
+
+    def fit(self, X: pd.DataFrame, y: pd.Series):
+        if not isinstance(X, (pd.DataFrame, np.ndarray)):
+            raise ValueError('X must be a pandas DataFrame or numpy array')
+        if not isinstance(y, (pd.Series, np.ndarray)):
+            raise ValueError('y must be a pandas Series or numpy array')
+
+        self.model.fit(X, y)
+        return self
+
+    def predict_residual(self, X: pd.DataFrame) -> np.ndarray:
+        if self.model is None:
+            raise RuntimeError('Model must be fit before prediction')
+        if not isinstance(X, (pd.DataFrame, np.ndarray)):
+            raise ValueError('X must be a pandas DataFrame or numpy array')
+
+        return self.model.predict(X)

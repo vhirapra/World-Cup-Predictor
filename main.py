@@ -1,7 +1,7 @@
 import pandas as pd
 import data_pipeline as dp
-from feature_engine import prepare_poisson_features
-from models import PoissonBaselineModel
+from feature_engine import prepare_poisson_features, build_xgboost_features
+from models import PoissonBaselineModel, XGBoostResidualModel
 
 
 def run_baseline_pipeline(start_year: int = 1990, sample_matches: int = 5):
@@ -29,6 +29,29 @@ def run_baseline_pipeline(start_year: int = 1990, sample_matches: int = 5):
     model = PoissonBaselineModel()
     model.fit(features)
     print('Model fitted.')
+
+    print('Calculating training residuals...')
+    residual_data = model.calculate_training_residuals(features)
+
+    print('Encoding XGBoost features...')
+    xgb_dataset = build_xgboost_features(residual_data)
+    if 'poisson_residual' not in xgb_dataset.columns:
+        raise RuntimeError('Expected poisson_residual column for XGBoost training')
+    
+    print('Filtering out low-stakes freidnlies to boost signal...')
+    xgb_dataset = xgb_dataset[xgb_dataset['importance_score']>=0.4].copy()
+
+    y = xgb_dataset['poisson_residual']
+    X = xgb_dataset.drop(columns=['poisson_residual'], errors='ignore')
+    if 'goals' in X.columns:
+        X = X.drop(columns=['goals'])
+    drop_code_cols = [c for c in X.columns if c.endswith('_code')]
+    X = X.drop(columns=drop_code_cols, errors='ignore')
+
+    print('Training XGBoost residual model...')
+    residual_model = XGBoostResidualModel()
+    residual_model.fit(X, y)
+    print(f'Trained XGBoost residual model on {len(X)} rows.')
 
     # Quick evaluation: pick recent World Cup matches from historical file
     print('\nSelecting evaluation matches...')
@@ -68,7 +91,34 @@ def run_baseline_pipeline(start_year: int = 1990, sample_matches: int = 5):
         except Exception:
             lam_a = lam_b = model.global_mean
 
-        print(f"{row['date'].date()} - {home} vs {away} | actual {home_score}-{away_score} | predicted {lam_a:.2f} - {lam_b:.2f}")
+        eval_match = {
+            'date': row['date'],
+            'home_team': home,
+            'away_team': away,
+            'home_score': home_score,
+            'away_score': away_score,
+            'neutral': neutral,
+            'tournament': row.get('tournament_name') or row.get('tournament'),
+        }
+        eval_features = prepare_poisson_features(pd.DataFrame([eval_match]))
+        eval_xgb = build_xgboost_features(eval_features)
+        if 'goals' in eval_xgb.columns:
+            eval_xgb = eval_xgb.drop(columns=['goals'])
+        if 'poisson_residual' in eval_xgb.columns:
+            eval_xgb = eval_xgb.drop(columns=['poisson_residual'])
+        eval_xgb = eval_xgb.reindex(columns=X.columns, fill_value=0)
+
+        deltas = residual_model.predict_residual(eval_xgb)
+        delta_home = float(deltas[0]) if len(deltas) > 0 else 0.0
+        delta_away = float(deltas[1]) if len(deltas) > 1 else 0.0
+        final_home = max(0.1, lam_a + delta_home)
+        final_away = max(0.1, lam_b + delta_away)
+
+        print(
+            f"{row['date'].date()} - {home} vs {away} | actual {home_score}-{away_score} | "
+            f"baseline {lam_a:.2f}-{lam_b:.2f} | delta {delta_home:.2f}-{delta_away:.2f} | "
+            f"adjusted {final_home:.2f}-{final_away:.2f}"
+        )
         printed += 1
 
 
