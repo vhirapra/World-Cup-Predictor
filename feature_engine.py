@@ -146,8 +146,6 @@ def _importance_score(row):
         return 0.25
     if 'friendly' in tournament or 'exhibition' in tournament:
         return 0.05
-    if 'world cup' in tournament or 'fifa' in tournament:
-        return 0.4
     return 0.15
 
 
@@ -183,8 +181,9 @@ def prepare_poisson_features(matches_df: pd.DataFrame,
     else:
         df[neutral_col] = False
 
-    df['days_since'] = (asof_date - df[date_column]).dt.days.clip(lower=0)
-    df['decay_weight'] = np.exp(-decay_lambda * df['days_since'])
+    # `days_since` is computed later on a per-team basis so it represents the gap
+    # from each match to the next more recent match, with the most recent match
+    # treated as the current date (0 days since).
     df['importance_score'] = df.apply(_importance_score, axis=1)
 
     name_to_id, former_map = _load_team_name_to_id()
@@ -227,8 +226,6 @@ def prepare_poisson_features(matches_df: pd.DataFrame,
         'goals': df[home_goals_col],
         'home_indicator': np.where(df[neutral_col], 0, 1),
         'date': df[date_column],
-        'days_since': df['days_since'],
-        'decay_weight': df['decay_weight'],
         'importance_score': df['importance_score'],
     })
 
@@ -242,12 +239,18 @@ def prepare_poisson_features(matches_df: pd.DataFrame,
         'goals': df[away_goals_col],
         'home_indicator': 0,
         'date': df[date_column],
-        'days_since': df['days_since'],
-        'decay_weight': df['decay_weight'],
         'importance_score': df['importance_score'],
     })
 
     output = pd.concat([home_rows, away_rows], ignore_index=True, sort=False)
+
+    # Compute days since the next more recent match for each team.
+    output['_original_index'] = np.arange(len(output))
+    output = output.sort_values(['team', 'date'], ascending=[True, True]).copy()
+    output['days_since'] = output.groupby('team')['date'].diff().dt.days.shift(-1).clip(lower=0)
+    output['days_since'] = output['days_since'].fillna(0)
+    output = output.sort_values('_original_index').drop(columns=['_original_index'])
+    output['decay_weight'] = np.exp(-decay_lambda * output['days_since'])
 
     output['team_historical_squad_awards'] = output.apply(
         lambda r: _lookup_award_count(r['tournament_id'], r['team_id']), axis=1
@@ -277,24 +280,47 @@ def prepare_poisson_features(matches_df: pd.DataFrame,
     columns = [c for c in columns if c in output.columns]
     return output[columns]
 
-
-def build_xgboost_features(poisson_df: pd.DataFrame, extra_data_dict=None) -> pd.DataFrame:
-    """Encode categorical features and drop string columns for XGBoost."""
+def build_xgboost_features(poisson_df: pd.DataFrame, encoder_dict=None):
+    """
+    Encodes categorical features for XGBoost using a static dictionary to prevent amnesia 
+    during future match predictions.
+    
+    Returns:
+        df: The formatted dataframe.
+        encoder_dict: The dictionary used for mapping (to be saved and reused).
+    """
     df = poisson_df.copy()
+    
+    # If no dictionary is provided (e.g., during Stage 2 Training), build a master dictionary
+    if encoder_dict is None:
+        encoder_dict = {}
+        # Build master maps for all text columns that need to be converted to integers
+        for col in ['team', 'opponent', 'team_id', 'opponent_id', 'tournament_id', 'tournament']:
+            if col in df.columns:
+                unique_values = df[col].astype(str).unique()
+                # Create a map of {"StringValue": IntegerCode}
+                encoder_dict[col] = {val: idx for idx, val in enumerate(unique_values)}
 
-    if 'team' in df.columns:
-        df['team_code'] = pd.factorize(df['team'].astype(str))[0]
-    if 'opponent' in df.columns:
-        df['opponent_code'] = pd.factorize(df['opponent'].astype(str))[0]
-    if 'team_id' in df.columns:
-        df['team_id_code'] = pd.factorize(df['team_id'].astype(str))[0]
-    if 'opponent_id' in df.columns:
-        df['opponent_id_code'] = pd.factorize(df['opponent_id'].astype(str))[0]
-    if 'tournament_id' in df.columns:
-        df['tournament_id_code'] = pd.factorize(df['tournament_id'].astype(str))[0]
-    if 'tournament' in df.columns:
-        df['tournament_code'] = pd.factorize(df['tournament'].astype(str))[0]
+    # Apply the static dictionary to map strings to integers
+    if 'team' in df.columns and 'team' in encoder_dict:
+        df['team_code'] = df['team'].astype(str).map(encoder_dict['team']).fillna(-1).astype(int)
+    
+    if 'opponent' in df.columns and 'opponent' in encoder_dict:
+        df['opponent_code'] = df['opponent'].astype(str).map(encoder_dict['opponent']).fillna(-1).astype(int)
+        
+    if 'team_id' in df.columns and 'team_id' in encoder_dict:
+        df['team_id_code'] = df['team_id'].astype(str).map(encoder_dict['team_id']).fillna(-1).astype(int)
+        
+    if 'opponent_id' in df.columns and 'opponent_id' in encoder_dict:
+        df['opponent_id_code'] = df['opponent_id'].astype(str).map(encoder_dict['opponent_id']).fillna(-1).astype(int)
+        
+    if 'tournament_id' in df.columns and 'tournament_id' in encoder_dict:
+        df['tournament_id_code'] = df['tournament_id'].astype(str).map(encoder_dict['tournament_id']).fillna(-1).astype(int)
+        
+    if 'tournament' in df.columns and 'tournament' in encoder_dict:
+        df['tournament_code'] = df['tournament'].astype(str).map(encoder_dict['tournament']).fillna(-1).astype(int)
 
+    # Drop the original string columns so XGBoost doesn't crash
     drop_columns = [
         'team', 'opponent', 'date', 'tournament', 'team_id', 'opponent_id',
         'tournament_id', 'stage_name', 'group_name', 'group_stage', 'knockout_stage',
@@ -305,4 +331,5 @@ def build_xgboost_features(poisson_df: pd.DataFrame, extra_data_dict=None) -> pd
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    return df
+    # Return BOTH the dataframe and the dictionary so main.py can save it for the future
+    return df, encoder_dict

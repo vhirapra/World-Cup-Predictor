@@ -195,7 +195,7 @@ class XGBoostResidualModel:
         if xgb is None:
             raise ImportError('xgboost is required for XGBoostResidualModel. Install it with `pip install xgboost`.')
         self.model = xgb.XGBRegressor(
-            max_depth=35,
+            max_depth=5,
             learning_rate=0.08,
             n_estimators=300,
             subsample=0.8,
