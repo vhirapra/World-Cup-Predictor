@@ -2,6 +2,17 @@ import numpy as np
 import pandas as pd
 import re
 
+TARGET_TOURNAMENT_TEAMS = [
+    "Canada", "Mexico", "USA", "Algeria", "Argentina", "Australia",
+    "Austria", "Belgium", "Bosnia and Herzegovina", "Brazil", "Cabo Verde",
+    "Colombia", "Congo DR", "Ivory Coast", "Croatia", "Curaçao",
+    "Czech Republic", "Ecuador", "Egypt", "England", "France", "Germany",
+    "Ghana", "Haiti", "IR Iran", "Iraq", "Japan", "Jordan",
+    "Korea Republic", "Morocco", "Netherlands", "New Zealand", "Norway",
+    "Panama", "Paraguay", "Portugal", "Qatar", "Saudi Arabia", "Scotland",
+    "Senegal", "South Africa", "Spain", "Sweden", "Switzerland", "Tunisia",
+    "Turkey", "Uruguay", "Uzbekistan"
+]
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -20,25 +31,49 @@ def _load_team_name_to_id():
             code = str(row.get('team_code', '')).strip()
             team_id = row.get('team_id')
             if pd.notna(team_id):
-                if name:
-                    name_to_id[name.lower()] = team_id
-                if code:
-                    name_to_id[code.lower()] = team_id
-    except Exception:
-        pass
+                if name: name_to_id[name.lower()] = team_id
+                if code: name_to_id[code.lower()] = team_id
+    except Exception:pass
 
     try:
         former_df = pd.read_csv('data/all_matches/former_names.csv', dtype=str)
         for _, row in former_df.iterrows():
             former_name = str(row.get('former', '')).strip().lower()
             current_name = str(row.get('current', '')).strip().lower()
-            if former_name and current_name:
-                former_map[former_name] = current_name
-    except Exception:
-        pass
+            if former_name and current_name: former_map[former_name] = current_name
+    except Exception:pass
+
+    for former, current in former_map.items():
+        if current in name_to_id and former not in name_to_id:
+            name_to_id[former] = name_to_id[current]
+    unique_teams_set = set(TARGET_TOURNAMENT_TEAMS) # Start with our guaranteed list
+    
+    try:
+        results_df = pd.read_csv('data/all_matches/results.csv', dtype=str)
+        results_df.columns = results_df.columns.str.strip().str.lower().str.replace(' ', '_')
+        
+        h_col = next((c for c in ['home_team', 'home', 'team1', 'team_a'] if c in results_df.columns), None)
+        a_col = next((c for c in ['away_team', 'away', 'team2', 'team_b'] if c in results_df.columns), None)
+        
+        if h_col and a_col:
+            # Mix the global dataset teams in with our target list
+            unique_teams_set.update(results_df[h_col].dropna().astype(str).str.strip())
+            unique_teams_set.update(results_df[a_col].dropna().astype(str).str.strip())
+            
+    except Exception: pass
+
+    # Sort alphabetically to perfectly mirror data_pipeline.py
+    all_global_teams = sorted(list(unique_teams_set))
+    
+    synthetic_counter = 1
+    for team in all_global_teams:
+        team_key = team.lower()
+        if team_key not in name_to_id:
+            synthetic_id = f'INT-{synthetic_counter:04d}'
+            name_to_id[team_key] = synthetic_id
+            synthetic_counter += 1
 
     return name_to_id, former_map
-
 
 def _resolve_team_id(team_name, name_to_id, former_map):
     if pd.isna(team_name):
@@ -60,57 +95,51 @@ def _parse_year_from_tournament_id(tournament_id):
 
 def _load_historical_squad_awards():
     try:
-        awards = pd.read_csv(
-            'data/past_world_cups/award_winners.csv',
-            usecols=['player_id', 'tournament_id', 'team_id'],
-            dtype=str,
-        )
-        squads = pd.read_csv(
-            'data/past_world_cups/squads.csv',
-            usecols=['player_id', 'tournament_id', 'team_id'],
-            dtype=str,
-        )
-        tournaments = pd.read_csv(
-            'data/past_world_cups/tournaments.csv',
-            usecols=['tournament_id', 'year'],
-            dtype=str,
-        )
+        awards = pd.read_csv('data/past_world_cups/award_winners.csv', usecols=['player_id', 'tournament_id', 'team_id'], dtype=str)
+        # NEW: We are now pulling the position column from the squads file
+        squads = pd.read_csv('data/past_world_cups/squads.csv', dtype=str)
+        tournaments = pd.read_csv('data/past_world_cups/tournaments.csv', usecols=['tournament_id', 'year'], dtype=str)
     except Exception:
-        return pd.DataFrame(columns=['tournament_id', 'team_id', 'historical_squad_awards'])
+        return pd.DataFrame(columns=['tournament_id', 'team_id', 'attack_awards', 'defense_awards'])
+
+    # Find the position column (handles different CSV naming conventions)
+    pos_col = next((c for c in ['position_name', 'position_code', 'position'] if c in squads.columns), None)
+    if pos_col is None:
+        squads['position_name'] = 'Unknown'
+        pos_col = 'position_name'
 
     awards = awards.dropna(subset=['player_id', 'tournament_id'])
     squads = squads.dropna(subset=['player_id', 'tournament_id', 'team_id'])
 
     awards['award_count'] = 1
-    award_counts = (
-        awards.groupby(['player_id', 'tournament_id'], dropna=False, as_index=False)
-        .agg({'award_count': 'sum'})
-    )
-
+    award_counts = awards.groupby(['player_id', 'tournament_id'], dropna=False, as_index=False).agg({'award_count': 'sum'})
     tournaments['year'] = pd.to_numeric(tournaments['year'], errors='coerce')
+    
     award_counts = award_counts.merge(tournaments, on='tournament_id', how='left')
     squads = squads.merge(tournaments, on='tournament_id', how='left', suffixes=('', '_squad'))
 
     award_counts['year'] = award_counts['year'].fillna(award_counts['tournament_id'].apply(_parse_year_from_tournament_id))
     squads['year'] = squads['year'].fillna(squads['tournament_id'].apply(_parse_year_from_tournament_id))
 
-    merged = squads.merge(
-        award_counts,
-        on='player_id',
-        how='left',
-        suffixes=('_squad', '_award'),
-    )
+    merged = squads.merge(award_counts, on='player_id', how='left', suffixes=('_squad', '_award'))
     merged = merged[merged['year_award'].notna() & merged['year_squad'].notna()]
     merged = merged[merged['year_award'] < merged['year_squad']]
 
+    def categorize_position(pos):
+        p = str(pos).lower()
+        if any(x in p for x in ['forward', 'striker', 'fw', 'st', 'midfield', 'mf', 'am', 'wing']):
+            return 'attack_awards'
+        return 'defense_awards'
+
+    merged['pos_category'] = merged[pos_col].apply(categorize_position)
     merged['tournament_id'] = merged.get('tournament_id_squad')
     merged['team_id'] = merged.get('team_id_squad')
 
-    historical = (
-        merged.groupby(['tournament_id', 'team_id'], dropna=False, as_index=False)
-        .agg({'award_count': 'sum'})
-        .rename(columns={'award_count': 'historical_squad_awards'})
-    )
+    historical = merged.groupby(['tournament_id', 'team_id', 'pos_category'], dropna=False)['award_count'].sum().unstack(fill_value=0).reset_index()
+    
+    for col in ['attack_awards', 'defense_awards']:
+        if col not in historical.columns: historical[col] = 0
+        
     return historical
 
 
@@ -149,41 +178,16 @@ def _importance_score(row):
     return 0.15
 
 
-def prepare_poisson_features(matches_df: pd.DataFrame,
-                             date_column: str = 'date',
-                             home_col: str = 'home_team',
-                             away_col: str = 'away_team',
-                             home_goals_col: str = 'home_score',
-                             away_goals_col: str = 'away_score',
-                             neutral_col: str = 'neutral',
-                             decay_lambda: float = 0.0005,
-                             asof_date=None) -> pd.DataFrame:
-    """Transform match results into a Poisson-regression training dataset.
-
-    The returned dataframe includes engineered features for rest time, pressure,
-    and historical squad award differential.
-    """
-    if asof_date is None:
-        asof_date = pd.Timestamp.now()
-
+def prepare_poisson_features(matches_df: pd.DataFrame, date_column: str = 'date', home_col: str = 'home_team', away_col: str = 'away_team', home_goals_col: str = 'home_score', away_goals_col: str = 'away_score', neutral_col: str = 'neutral', decay_lambda: float = 0.0005) -> pd.DataFrame:
     df = _normalize_columns(matches_df)
-    if date_column not in df.columns:
-        raise ValueError(f'Missing date column: {date_column}')
-
     df[date_column] = pd.to_datetime(df[date_column], errors='coerce')
     df = df.dropna(subset=[date_column]).copy()
 
     if neutral_col in df.columns:
-        if df[neutral_col].dtype == object:
-            df[neutral_col] = df[neutral_col].astype(str).str.lower().isin(['true', 'yes', 'y', '1'])
-        else:
-            df[neutral_col] = df[neutral_col].fillna(False).astype(bool)
-    else:
-        df[neutral_col] = False
+        if df[neutral_col].dtype == object: df[neutral_col] = df[neutral_col].astype(str).str.lower().isin(['true', 'yes', 'y', '1'])
+        else: df[neutral_col] = df[neutral_col].fillna(False).astype(bool)
+    else: df[neutral_col] = False
 
-    # `days_since` is computed later on a per-team basis so it represents the gap
-    # from each match to the next more recent match, with the most recent match
-    # treated as the current date (0 days since).
     df['importance_score'] = df.apply(_importance_score, axis=1)
 
     name_to_id, former_map = _load_team_name_to_id()
@@ -193,58 +197,31 @@ def prepare_poisson_features(matches_df: pd.DataFrame,
     tournament_lookup = {}
     try:
         tournaments = pd.read_csv('data/past_world_cups/tournaments.csv', usecols=['tournament_id', 'tournament_name'], dtype=str)
-        tournament_lookup = {
-            str(x).strip().lower(): tid
-            for x, tid in zip(tournaments['tournament_name'], tournaments['tournament_id'])
-            if pd.notna(x)
-        }
-    except Exception:
-        pass
+        tournament_lookup = {str(x).strip().lower(): tid for x, tid in zip(tournaments['tournament_name'], tournaments['tournament_id']) if pd.notna(x)}
+    except Exception: pass
 
     df['tournament_id'] = df['tournament'].apply(lambda t: _map_tournament_id(t, tournament_lookup) if 'tournament' in df.columns else pd.NA)
 
     award_summary = _load_historical_squad_awards()
-    award_lookup = {}
-    if not award_summary.empty:
-        award_lookup = {
-            (row['tournament_id'], row['team_id']): int(row['historical_squad_awards'])
-            for _, row in award_summary.iterrows()
-        }
-
-    def _lookup_award_count(tournament_id, team_id):
-        if pd.isna(tournament_id) or pd.isna(team_id):
-            return 0
-        return award_lookup.get((tournament_id, team_id), 0)
+    
+    # Safely build the dictionaries from the new Attack/Defense columns
+    attack_lookup = {(row['tournament_id'], row['team_id']): int(row['attack_awards']) for _, row in award_summary.iterrows()} if not award_summary.empty else {}
+    defense_lookup = {(row['tournament_id'], row['team_id']): int(row['defense_awards']) for _, row in award_summary.iterrows()} if not award_summary.empty else {}
 
     home_rows = pd.DataFrame({
-        'team': df[home_col],
-        'opponent': df[away_col],
-        'team_id': df['home_team_id'],
-        'opponent_id': df['away_team_id'],
-        'tournament': df['tournament'] if 'tournament' in df.columns else pd.NA,
-        'tournament_id': df['tournament_id'],
-        'goals': df[home_goals_col],
-        'home_indicator': np.where(df[neutral_col], 0, 1),
-        'date': df[date_column],
-        'importance_score': df['importance_score'],
+        'team': df[home_col], 'opponent': df[away_col], 'team_id': df['home_team_id'], 'opponent_id': df['away_team_id'],
+        'tournament': df['tournament'] if 'tournament' in df.columns else pd.NA, 'tournament_id': df['tournament_id'],
+        'goals': df[home_goals_col], 'home_indicator': np.where(df[neutral_col], 0, 1), 'date': df[date_column], 'importance_score': df['importance_score'],
     })
 
     away_rows = pd.DataFrame({
-        'team': df[away_col],
-        'opponent': df[home_col],
-        'team_id': df['away_team_id'],
-        'opponent_id': df['home_team_id'],
-        'tournament': df['tournament'] if 'tournament' in df.columns else pd.NA,
-        'tournament_id': df['tournament_id'],
-        'goals': df[away_goals_col],
-        'home_indicator': 0,
-        'date': df[date_column],
-        'importance_score': df['importance_score'],
+        'team': df[away_col], 'opponent': df[home_col], 'team_id': df['away_team_id'], 'opponent_id': df['home_team_id'],
+        'tournament': df['tournament'] if 'tournament' in df.columns else pd.NA, 'tournament_id': df['tournament_id'],
+        'goals': df[away_goals_col], 'home_indicator': 0, 'date': df[date_column], 'importance_score': df['importance_score'],
     })
 
     output = pd.concat([home_rows, away_rows], ignore_index=True, sort=False)
 
-    # Compute days since the next more recent match for each team.
     output['_original_index'] = np.arange(len(output))
     output = output.sort_values(['team', 'date'], ascending=[True, True]).copy()
     output['days_since'] = output.groupby('team')['date'].diff().dt.days.shift(-1).clip(lower=0)
@@ -252,15 +229,11 @@ def prepare_poisson_features(matches_df: pd.DataFrame,
     output = output.sort_values('_original_index').drop(columns=['_original_index'])
     output['decay_weight'] = np.exp(-decay_lambda * output['days_since'])
 
-    output['team_historical_squad_awards'] = output.apply(
-        lambda r: _lookup_award_count(r['tournament_id'], r['team_id']), axis=1
-    )
-    output['opponent_historical_squad_awards'] = output.apply(
-        lambda r: _lookup_award_count(r['tournament_id'], r['opponent_id']), axis=1
-    )
-    output['star_power_differential'] = (
-        output['team_historical_squad_awards'] - output['opponent_historical_squad_awards']
-    ).fillna(0).astype(int)
+    output['team_attack_awards'] = output.apply(lambda r: attack_lookup.get((r['tournament_id'], r['team_id']), 0), axis=1)
+    output['opponent_defense_awards'] = output.apply(lambda r: defense_lookup.get((r['tournament_id'], r['opponent_id']), 0), axis=1)
+    
+    # Calculate the new Positional Advantage Elo Feature
+    output['attack_vs_defense_advantage'] = (output['team_attack_awards'] - output['opponent_defense_awards']).fillna(0).astype(int)
 
     output['rest_days'] = output.sort_values(['team', 'date']).groupby('team')['date'].diff().dt.days.clip(lower=0)
     output['rest_days'] = output['rest_days'].fillna(30).astype(int)
@@ -271,15 +244,9 @@ def prepare_poisson_features(matches_df: pd.DataFrame,
     output['days_since'] = pd.to_numeric(output['days_since'], errors='coerce').fillna(0).astype(float)
     output['decay_weight'] = pd.to_numeric(output['decay_weight'], errors='coerce').fillna(0.0).astype(float)
 
-    columns = [
-        'team', 'opponent', 'goals', 'home_indicator', 'date', 'days_since',
-        'decay_weight', 'importance_score', 'rest_days', 'tournament',
-        'tournament_id', 'team_id', 'opponent_id', 'team_historical_squad_awards',
-        'opponent_historical_squad_awards', 'star_power_differential',
-    ]
-    columns = [c for c in columns if c in output.columns]
-    return output[columns]
-
+    columns = ['team', 'opponent', 'goals', 'home_indicator', 'date', 'days_since', 'decay_weight', 'importance_score', 'rest_days', 'tournament', 'tournament_id', 'team_id', 'opponent_id', 'attack_vs_defense_advantage']
+    return output[[c for c in columns if c in output.columns]]
+        
 def build_xgboost_features(poisson_df: pd.DataFrame, encoder_dict=None):
     """
     Encodes categorical features for XGBoost using a static dictionary to prevent amnesia 
