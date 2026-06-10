@@ -177,6 +177,21 @@ def _importance_score(row):
         return 0.05
     return 0.15
 
+def _load_penalty_recklessness():
+    """Scans historical goalscorers to find how many penalty goals a team has conceded."""
+    try:
+        goals = pd.read_csv('data/all_matches/goalscorers.csv', dtype=str)
+        # Isolate only the goals scored via penalty
+        pens = goals[goals['penalty'].astype(str).str.upper() == 'TRUE'].copy()
+        
+        # If the 'team' scored it, the other team conceded it
+        pens['conceded_by'] = np.where(pens['team'] == pens['home_team'], pens['away_team'], pens['home_team'])
+        
+        # Count total penalties conceded per team
+        conceded_counts = pens.groupby('conceded_by').size().to_dict()
+        return conceded_counts
+    except Exception:
+        return {}
 
 def prepare_poisson_features(matches_df: pd.DataFrame, date_column: str = 'date', home_col: str = 'home_team', away_col: str = 'away_team', home_goals_col: str = 'home_score', away_goals_col: str = 'away_score', neutral_col: str = 'neutral', decay_lambda: float = 0.0005) -> pd.DataFrame:
     df = _normalize_columns(matches_df)
@@ -208,6 +223,8 @@ def prepare_poisson_features(matches_df: pd.DataFrame, date_column: str = 'date'
     attack_lookup = {(row['tournament_id'], row['team_id']): int(row['attack_awards']) for _, row in award_summary.iterrows()} if not award_summary.empty else {}
     defense_lookup = {(row['tournament_id'], row['team_id']): int(row['defense_awards']) for _, row in award_summary.iterrows()} if not award_summary.empty else {}
 
+    penalty_lookup = _load_penalty_recklessness()
+
     home_rows = pd.DataFrame({
         'team': df[home_col], 'opponent': df[away_col], 'team_id': df['home_team_id'], 'opponent_id': df['away_team_id'],
         'tournament': df['tournament'] if 'tournament' in df.columns else pd.NA, 'tournament_id': df['tournament_id'],
@@ -234,6 +251,7 @@ def prepare_poisson_features(matches_df: pd.DataFrame, date_column: str = 'date'
     
     # Calculate the new Positional Advantage Elo Feature
     output['attack_vs_defense_advantage'] = (output['team_attack_awards'] - output['opponent_defense_awards']).fillna(0).astype(int)
+    output['opponent_historical_pens_conceded'] = output['opponent'].apply(lambda x: penalty_lookup.get(str(x), 0)).astype(int)
 
     output['rest_days'] = output.sort_values(['team', 'date']).groupby('team')['date'].diff().dt.days.clip(lower=0)
     output['rest_days'] = output['rest_days'].fillna(30).astype(int)
@@ -244,59 +262,36 @@ def prepare_poisson_features(matches_df: pd.DataFrame, date_column: str = 'date'
     output['days_since'] = pd.to_numeric(output['days_since'], errors='coerce').fillna(0).astype(float)
     output['decay_weight'] = pd.to_numeric(output['decay_weight'], errors='coerce').fillna(0.0).astype(float)
 
-    columns = ['team', 'opponent', 'goals', 'home_indicator', 'date', 'days_since', 'decay_weight', 'importance_score', 'rest_days', 'tournament', 'tournament_id', 'team_id', 'opponent_id', 'attack_vs_defense_advantage']
+    columns = ['team', 'opponent', 'goals', 'home_indicator', 'date', 'days_since', 'decay_weight', 'importance_score', 'rest_days', 'tournament', 'tournament_id', 'team_id', 'opponent_id', 'attack_vs_defense_advantage', 'opponent_historical_pens_conceded']
     return output[[c for c in columns if c in output.columns]]
-        
+
+
 def build_xgboost_features(poisson_df: pd.DataFrame, encoder_dict=None):
-    """
-    Encodes categorical features for XGBoost using a static dictionary to prevent amnesia 
-    during future match predictions.
-    
-    Returns:
-        df: The formatted dataframe.
-        encoder_dict: The dictionary used for mapping (to be saved and reused).
-    """
     df = poisson_df.copy()
     
-    # If no dictionary is provided (e.g., during Stage 2 Training), build a master dictionary
+    # We still build the dict just in case other scripts check for it, 
+    # but we will NOT feed these meaningless integers to the XGBoost model.
     if encoder_dict is None:
         encoder_dict = {}
-        # Build master maps for all text columns that need to be converted to integers
         for col in ['team', 'opponent', 'team_id', 'opponent_id', 'tournament_id', 'tournament']:
             if col in df.columns:
                 unique_values = df[col].astype(str).unique()
-                # Create a map of {"StringValue": IntegerCode}
                 encoder_dict[col] = {val: idx for idx, val in enumerate(unique_values)}
 
-    # Apply the static dictionary to map strings to integers
-    if 'team' in df.columns and 'team' in encoder_dict:
-        df['team_code'] = df['team'].astype(str).map(encoder_dict['team']).fillna(-1).astype(int)
-    
-    if 'opponent' in df.columns and 'opponent' in encoder_dict:
-        df['opponent_code'] = df['opponent'].astype(str).map(encoder_dict['opponent']).fillna(-1).astype(int)
-        
-    if 'team_id' in df.columns and 'team_id' in encoder_dict:
-        df['team_id_code'] = df['team_id'].astype(str).map(encoder_dict['team_id']).fillna(-1).astype(int)
-        
-    if 'opponent_id' in df.columns and 'opponent_id' in encoder_dict:
-        df['opponent_id_code'] = df['opponent_id'].astype(str).map(encoder_dict['opponent_id']).fillna(-1).astype(int)
-        
-    if 'tournament_id' in df.columns and 'tournament_id' in encoder_dict:
-        df['tournament_id_code'] = df['tournament_id'].astype(str).map(encoder_dict['tournament_id']).fillna(-1).astype(int)
-        
-    if 'tournament' in df.columns and 'tournament' in encoder_dict:
-        df['tournament_code'] = df['tournament'].astype(str).map(encoder_dict['tournament']).fillna(-1).astype(int)
-
-    # Drop the original string columns so XGBoost doesn't crash
+    # Drop ALL identifiers. XGBoost should only learn from context (Pressure, Rest, xG, Elo)
     drop_columns = [
-        'team', 'opponent', 'date', 'tournament', 'team_id', 'opponent_id',
+        'team', 'opponent', 'date', 'tournament', 'team_id', 'opponent_id', 
         'tournament_id', 'stage_name', 'group_name', 'group_stage', 'knockout_stage',
+        'team_code', 'opponent_code', 'team_id_code', 'opponent_id_code', 
+        'tournament_id_code', 'tournament_code'
     ]
+    
     df = df.drop(columns=[c for c in drop_columns if c in df.columns], errors='ignore')
+    
+    # Ensure only purely mathematical/abstract features remain
     df = df.select_dtypes(include=[np.number]).copy()
 
-    for col in df.columns:
+    for col in df.columns: 
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-    # Return BOTH the dataframe and the dictionary so main.py can save it for the future
     return df, encoder_dict

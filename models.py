@@ -14,10 +14,18 @@ class PoissonBaselineModel:
         self.result = None
         self.seen_teams = set()
         self.global_mean = None
+        self.team_scoring_strength = {}
 
     def fit(self, training_data: pd.DataFrame):
         self.seen_teams = set(training_data['team'].dropna().unique()) | set(training_data['opponent'].dropna().unique())
         self.global_mean = float(training_data['goals'].mean())
+        
+        # NEW: Pre-calculate individual team averages. 
+        # If the advanced math fails, teams fall back to their personal historical average!
+        for team in self.seen_teams:
+            team_data = training_data[training_data['team'] == team]
+            if not team_data.empty:
+                self.team_scoring_strength[team] = float(team_data['goals'].mean())
         
         formula = 'goals ~ team + opponent + home_indicator'
         weights = training_data['decay_weight'].astype(float).replace([np.inf, -np.inf], np.nan)
@@ -27,63 +35,42 @@ class PoissonBaselineModel:
         self.model = smf.glm(formula=formula, data=training_data, family=sm.families.Poisson())
         try:
             self.result = self.model.fit(weights=weights, maxiter=50, tol=1e-4, disp=False)
-        except Exception as e:
+        except Exception:
             try:
                 self.result = self.model.fit(maxiter=50, disp=False)
             except Exception:
                 self.result = None
-                self.fallback = True
-                try:
-                    home_means = training_data[training_data['home_indicator'] == 1].groupby('team')['goals'].mean().to_dict()
-                    away_means = training_data[training_data['home_indicator'] == 0].groupby('team')['goals'].mean().to_dict()
-                except Exception:
-                    home_means, away_means = {}, {}
-                self.fallback_home_means = home_means
-                self.fallback_away_means = away_means
-                self.fallback_global_mean = float(training_data['goals'].mean())
         return self
 
     def _construct_row(self, team, opponent, is_home):
         return pd.DataFrame({'team': [team], 'opponent': [opponent], 'home_indicator': [1 if is_home else 0]})
 
     def predict_expected_goals(self, team_a: str, team_b: str, is_neutral: bool = True):
-        if self.result is None and not getattr(self, 'fallback', False):
-            raise RuntimeError('Model must be fit before prediction')
         a_home, b_home = (0, 0) if is_neutral else (1, 0)
 
         def _predict(team, opponent, is_home):
-            if getattr(self, 'fallback', False) or self.result is None:
-                val = self.fallback_home_means.get(team) if is_home else self.fallback_away_means.get(team)
-                if val is None:
-                    h = self.fallback_home_means.get(team)
-                    a = self.fallback_away_means.get(team)
-                    val = 0.5 * (h + a) if h is not None and a is not None else self.fallback_global_mean
-                return float(max(val, 0.1))
-
-            if team not in self.seen_teams or opponent not in self.seen_teams:
-                return max(self.global_mean, 0.1)
+            # 1. If BOTH teams are perfectly mapped, use the advanced Poisson regression
+            if self.result is not None and team in self.seen_teams and opponent in self.seen_teams:
+                row = self._construct_row(team, opponent, is_home)
+                try:
+                    mu = self.result.predict(row)[0]
+                    return float(max(mu, 0.0))
+                except Exception: pass
             
-            row = self._construct_row(team, opponent, is_home)
-            try:
-                mu = self.result.predict(row)[0]
-                return float(max(mu, 0.0))
-            except Exception:
-                return float(max(self.global_mean, 0.1))
+            # 2. THE FIX: If the opponent is unknown, but WE are known, use OUR personal scoring average
+            if team in self.team_scoring_strength:
+                return float(max(self.team_scoring_strength[team], 0.1))
+            
+            # 3. Only if we are completely unknown do we use the global 1.35 average
+            return float(max(self.global_mean, 0.1))
 
         return _predict(team_a, team_b, a_home), _predict(team_b, team_a, b_home)
 
     def calculate_training_residuals(self, training_data: pd.DataFrame) -> pd.DataFrame:
         df = training_data.copy()
 
-        if getattr(self, 'fallback', False) or self.result is None:
-            def _expected(row):
-                team, is_home = row['team'], bool(row['home_indicator'])
-                val = self.fallback_home_means.get(team) if is_home else self.fallback_away_means.get(team)
-                if val is None:
-                    h, a = self.fallback_home_means.get(team), self.fallback_away_means.get(team)
-                    val = 0.5 * (h + a) if h is not None and a is not None else self.fallback_global_mean
-                return float(max(val, 0.1))
-            df['expected_goals'] = df.apply(_expected, axis=1)
+        if self.result is None:
+            df['expected_goals'] = df['team'].map(self.team_scoring_strength).fillna(self.global_mean)
         else:
             row_df = pd.DataFrame({'team': df['team'], 'opponent': df['opponent'], 'home_indicator': df['home_indicator'].astype(int)})
             try:
@@ -93,9 +80,11 @@ class PoissonBaselineModel:
                 expected = np.full(len(df), max(self.global_mean, 0.1), dtype=float)
 
             df['expected_goals'] = expected
+            
+            # Apply the new fallback here too
             unseen_mask = ~(df['team'].isin(self.seen_teams) & df['opponent'].isin(self.seen_teams))
             if unseen_mask.any():
-                df.loc[unseen_mask, 'expected_goals'] = max(self.global_mean, 0.1)
+                df.loc[unseen_mask, 'expected_goals'] = df.loc[unseen_mask, 'team'].map(self.team_scoring_strength).fillna(self.global_mean)
 
         df['poisson_residual'] = df['goals'] - df['expected_goals']
         return df
