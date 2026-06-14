@@ -1,4 +1,7 @@
 import pandas as pd
+import os
+from pathlib import Path
+from kaggle.api.kaggle_api_extended import KaggleApi
 
 TARGET_TOURNAMENT_TEAMS = [
     "Canada", "Mexico", "USA", "Algeria", "Argentina", "Australia",
@@ -12,11 +15,37 @@ TARGET_TOURNAMENT_TEAMS = [
     "Turkey", "Uruguay", "Uzbekistan"
 ]
 
+def download_kaggle_dataset(dataset_name='martj42/international-football-results-from-1872-to-2017',
+                           file_name='results.csv',
+                           download_path='data/all_matches'):
+    """Download dataset from Kaggle API dynamically."""
+    try:
+        Path(download_path).mkdir(parents=True, exist_ok=True)
+
+        api = KaggleApi()
+        api.authenticate()
+
+        output_file = os.path.join(download_path, file_name)
+        api.dataset_download_file(dataset_name, file_name, path=download_path, force=True)
+
+        print(f"Successfully downloaded {file_name} from Kaggle dataset: {dataset_name}")
+        return output_file
+    except Exception as e:
+        print(f"Error downloading from Kaggle: {e}")
+        print("Make sure you have Kaggle API credentials set up.")
+        print("Create ~/.kaggle/kaggle.json with your Kaggle API token.")
+        raise
+
 def load_historical_matches():
     historical_matches = pd.read_csv('data/past_world_cups/matches.csv')
     return historical_matches
 
-def load_international_results(path='data/all_matches/results.csv', start_year=1990):
+def load_international_results(use_kaggle=True, start_year=1990):
+    if use_kaggle:
+        path = download_kaggle_dataset()
+    else:
+        path = 'data/all_matches/results.csv'
+
     df = pd.read_csv(path)
     df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
 
@@ -59,7 +88,7 @@ def load_international_results(path='data/all_matches/results.csv', start_year=1
 
 def combine_match_datasets(historical_df=None, international_df=None,
                            historical_path='data/past_world_cups/matches.csv',
-                           international_path='data/all_matches/results.csv',
+                           use_kaggle=True,
                            start_year=1990,
                            output_path='data/combined_matches.csv'):
                            
@@ -100,7 +129,7 @@ def combine_match_datasets(historical_df=None, international_df=None,
     if historical_df is None:
         historical_df = load_historical_matches()
     if international_df is None:
-        international_df = load_international_results(path=international_path, start_year=start_year)
+        international_df = load_international_results(use_kaggle=use_kaggle, start_year=start_year)
 
     hist_std = _standardize(historical_df)
     intl_std = _standardize(international_df)

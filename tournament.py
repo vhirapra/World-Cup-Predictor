@@ -93,7 +93,7 @@ class WorldCupSimulator:
 
     def run_tournament(self):
         self._log("\n" + "="*60)
-        self._log("⚽ 2026 WORLD CUP MONTE CARLO SIMULATOR ⚽")
+        self._log("[2026 WORLD CUP MONTE CARLO SIMULATOR]")
         self._log("="*60)
 
         group_standings = {}
@@ -126,7 +126,7 @@ class WorldCupSimulator:
         current_survivors = seeded_32
         
         for stage_name, importance in stages:
-            self._log(f"\n🚀 {stage_name.upper()}")
+            self._log(f"\n>> {stage_name.upper()}")
             current_survivors = self.rank_teams(current_survivors)
             next_round = []
             
@@ -145,16 +145,16 @@ class WorldCupSimulator:
                 
             current_survivors = next_round
 
-        self._log("\n" + "🌟"*20)
-        self._log(f"🏆 2026 CHAMPION: {current_survivors[0].upper()} 🏆")
-        self._log("🌟"*20 + "\n")
+        self._log("\n" + "="*60)
+        self._log(f"[CHAMPION] 2026 Winner: {current_survivors[0].upper()}")
+        self._log("="*60 + "\n")
         
         # 3. CRITICAL: Return the winner to the aggregator
         return current_survivors[0]
 
 # --- NEW ENSEMBLE AGGREGATOR ---
 def run_monte_carlo_ensemble(poisson_model, xgb_model, encoder_dict, groups_dict, num_simulations=1000):
-    print(f"\n🌍 Starting Monte Carlo Ensemble: {num_simulations} Simulated World Cups...")
+    print(f"\n[Monte Carlo Ensemble] Starting {num_simulations} Simulated World Cups...")
     print("This may take a minute or two. Simulating...\n")
     
     championship_counts = Counter()
@@ -171,7 +171,7 @@ def run_monte_carlo_ensemble(poisson_model, xgb_model, encoder_dict, groups_dict
             print(f"[{i + 1} / {num_simulations}] tournaments complete...")
             
     print("\n" + "="*50)
-    print("🏆 TRUE WIN PROBABILITIES (LAW OF LARGE NUMBERS) 🏆")
+    print("[TRUE WIN PROBABILITIES (LAW OF LARGE NUMBERS)]")
     print("="*50)
     
     # Print the Top 20 teams by win percentage

@@ -2,6 +2,8 @@ from xml.parsers.expat import model
 
 import pandas as pd
 from scipy.stats import poisson
+import pickle
+from pathlib import Path
 import data_pipeline as dp
 from feature_engine import prepare_poisson_features, build_xgboost_features
 from models import PoissonBaselineModel, XGBoostResidualModel
@@ -43,41 +45,18 @@ def run_baseline_pipeline(start_year: int = 1990):
     residual_model.fit(X_full, y_full)
     print(f'Trained XGBoost on all {len(X_full)} high-stakes matches (including 2022).')
 
+    Path('data/models').mkdir(parents=True, exist_ok=True)
+    with open('data/models/poisson_model.pkl', 'wb') as f:
+        pickle.dump(model, f)
+    with open('data/models/xgboost_model.pkl', 'wb') as f:
+        pickle.dump(residual_model, f)
+    with open('data/models/encoder_dict.pkl', 'wb') as f:
+        pickle.dump(master_encoder_dict, f)
+    print('Saved trained models to data/models/')
+
+
 
  # Run the In-Sample Validation (checking 2022 memory)
-    backtest_historical_tournament(
-        residual_data=residual_data, 
-        X_matrix=X_full, 
-        xgb_model=residual_model, 
-        start_date='2022-11-20'
-    )
-    predict_single_match(
-        poisson_model=model, 
-        xgb_model=residual_model, 
-        encoder_dict=master_encoder_dict, 
-        team_a="Argentina", 
-        team_b="Iceland",
-        importance_val=0.05  # Testing a high-pressure knockout match
-    )
-
-    predict_single_match(
-        poisson_model=model, 
-        xgb_model=residual_model, 
-        encoder_dict=master_encoder_dict, 
-        team_a="Congo DR", 
-        team_b="Chile",
-        importance_val=0.05  # Testing a high-pressure knockout match
-    )
-
-    predict_single_match(
-        poisson_model=model, 
-        xgb_model=residual_model, 
-        encoder_dict=master_encoder_dict, 
-        team_a="Portugal", 
-        team_b="Congo DR",
-        importance_val=0.05  # Testing a high-pressure knockout match
-    )
-
 
 # ---------------------------------------------------------
     # PATH 3: FULL MONTE CARLO ENSEMBLE
@@ -98,7 +77,7 @@ def run_baseline_pipeline(start_year: int = 1990):
     }
     
     # Run 1,000 tournaments to get highly stable probabilities
-    #run_monte_carlo_ensemble(model, residual_model, master_encoder_dict, official_groups, num_simulations=10)
+    run_monte_carlo_ensemble(model, residual_model, master_encoder_dict, official_groups, num_simulations=30)
 
     # PATH 4: SINGLE MATCH PREDICTOR
     # You can change the importance_val to test pressure:
