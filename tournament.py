@@ -91,10 +91,12 @@ class WorldCupSimulator:
     def rank_teams(self, team_list):
         return sorted(team_list, key=lambda x: (self.stats[x]['pts'], self.stats[x]['gf'], self.stats[x]['elo']), reverse=True)
 
-    def run_tournament(self):
+def run_tournament(self):
         self._log("\n" + "="*60)
         self._log("[2026 WORLD CUP MONTE CARLO SIMULATOR]")
         self._log("="*60)
+
+        bracket_history = {} # NEW: Track the matchups
 
         group_standings = {}
         for group_name, members in self.groups.items():
@@ -102,16 +104,9 @@ class WorldCupSimulator:
                 self._simulate_match(t1, t2, "Group Stage", 0.40, is_knockout=False)
             group_standings[group_name] = self.rank_teams(members)
 
-        self._log("\n--- FINAL GROUP STANDINGS ---")
-        for group_name, ranked_members in group_standings.items():
-            self._log(f"\n{group_name}:")
-            for i, team in enumerate(ranked_members):
-                st = self.stats[team]
-                self._log(f"  {i+1}. {team.ljust(18)} | Pts: {st['pts']} | GF: {st['gf']} | Elo: {st['elo']:.2f}")
-
+        # ... (Keep the standings logging and top_32_teams logic the same) ...
         first_place = [standings[0] for standings in group_standings.values()]
         second_place = [standings[1] for standings in group_standings.values()]
-        
         third_place = [standings[2] for standings in group_standings.values()]
         advancing_thirds = self.rank_teams(third_place)[:8]
 
@@ -129,6 +124,7 @@ class WorldCupSimulator:
             self._log(f"\n>> {stage_name.upper()}")
             current_survivors = self.rank_teams(current_survivors)
             next_round = []
+            stage_matches = [] # NEW: Track matches for this specific stage
             
             num_matches = len(current_survivors) // 2
             for i in range(num_matches):
@@ -139,18 +135,20 @@ class WorldCupSimulator:
                 
                 score_str = f"{g_high} - {g_low}"
                 pk_str = " (PKs)" if g_high == g_low else ""
-                self._log(f"Seed {i+1} {high_seed} vs Seed {len(current_survivors)-i} {low_seed}  --> {winner.upper()} wins {score_str}{pk_str}")
+                
+                # NEW: Save the match data
+                stage_matches.append({
+                    'team_a': high_seed, 'team_b': low_seed,
+                    'winner': winner, 'score': score_str + pk_str
+                })
                 
                 next_round.append(winner)
                 
+            bracket_history[stage_name] = stage_matches # NEW: Save stage to history
             current_survivors = next_round
-
-        self._log("\n" + "="*60)
-        self._log(f"[CHAMPION] 2026 Winner: {current_survivors[0].upper()}")
-        self._log("="*60 + "\n")
         
-        # 3. CRITICAL: Return the winner to the aggregator
-        return current_survivors[0]
+        # RETURN BOTH WINNER AND HISTORY
+        return current_survivors[0], bracket_history
 
 # --- NEW ENSEMBLE AGGREGATOR ---
 def run_monte_carlo_ensemble(poisson_model, xgb_model, encoder_dict, groups_dict, num_simulations=1000):

@@ -9,7 +9,7 @@ def predict_single_match(poisson_model, xgb_model, encoder_dict, team_a, team_b,
     importance_val: 0.40 (Group Stage) to 1.0 (World Cup Final)
     """
     print(f"\n" + "="*50)
-    print(f"🔮 SINGLE MATCH PREDICTOR: {team_a} vs {team_b}")
+    print(f"SINGLE MATCH PREDICTOR: {team_a} vs {team_b}")
     print("="*50)
 
     # 1. Dummy DataFrame for the Matchup
@@ -72,16 +72,16 @@ def predict_single_match(poisson_model, xgb_model, encoder_dict, team_a, team_b,
     confidence_pct = max(0.0, (1 - (entropy / max_entropy)) * 100)
 
     # 9. Formatted Output
-    print(f"\n📊 Expected Goals (xG) Breakdown:")
+    print(f"\n Expected Goals (xG) Breakdown:")
     print(f"Base xG:     {team_a} ({lam_a_base:.2f}) - {team_b} ({lam_b_base:.2f})")
     print(f"Pressure Δ:  {delta_home:+.2f} / {delta_away:+.2f}")
     print(f"Final xG:    {team_a} ({final_lam_a:.2f}) - {team_b} ({final_lam_b:.2f})")
 
-    print(f"\n🎲 Match Outcome Probabilities:")
+    print(f"\n Match Outcome Probabilities:")
     print(f"{team_a.ljust(15)} Win: {prob_a_win * 100:>5.1f}%")
     print(f"Draw:            {prob_draw * 100:>5.1f}%")
     print(f"{team_b.ljust(15)} Win: {prob_b_win * 100:>5.1f}%")
-    print(f"\n🧠 Model Confidence Score: {confidence_pct:.1f}%")
+    print(f"\n Model Confidence Score: {confidence_pct:.1f}%")
     print("="*50 + "\n")
     
     return prob_a_win, prob_draw, prob_b_win
