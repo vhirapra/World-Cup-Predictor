@@ -12,7 +12,7 @@ from evaluation import backtest_historical_tournament
 from predict_match import predict_single_match
     
 
-def run_baseline_pipeline(start_year: int = 1990):
+def run_baseline_pipeline(start_year: int = 2014):
     print('Loading combined match datasets...')
     combined_data = dp.combine_match_datasets(start_year=start_year)
 
