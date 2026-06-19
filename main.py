@@ -82,7 +82,19 @@ def run_baseline_pipeline(start_year: int = 1990):
     # PATH 4: SINGLE MATCH PREDICTOR
     # You can change the importance_val to test pressure:
     # 0.40 (Group Stage), 0.70 (Quarterfinal), 1.0 (Grand Final), 0.05 (Preliminary Friendly)
-\
+    p_a, p_draw, p_b, xg_a, xg_b = predict_single_match(
+        poisson_model=model,
+        xgb_model=residual_model,
+        encoder_dict=master_encoder_dict,
+        team_a="Portugal",
+        team_b="Congo DR",
+        importance_val=0.55,
+    )
+    print(
+        "Portugal vs Congo DR: "
+        f"Portugal win {p_a * 100:.1f}%, draw {p_draw * 100:.1f}%, "
+        f"Congo DR win {p_b * 100:.1f}%, xG {xg_a:.2f}-{xg_b:.2f}"
+    )
     
 
 if __name__ == '__main__':

@@ -17,7 +17,7 @@ def test_models_exist(models):
 def test_probability_math(models):
     """Tests if match outcome probabilities sum correctly to ~1.0"""
     poisson_model, xgboost_model, encoder_dict = models
-    p_a, p_draw, p_b = predict_single_match(
+    p_a, p_draw, p_b, xg_a, xg_b = predict_single_match(
         poisson_model, xgboost_model, encoder_dict, "Spain", "Germany", 0.55
     )
     total_prob = p_a + p_draw + p_b

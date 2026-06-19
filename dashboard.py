@@ -10,7 +10,7 @@ import plotly.express as px
 from dashboard_helpers import (
     load_models, get_group_stage_matches, get_group_standings,
     get_probable_matches, run_tournament_simulation, get_flag_emoji,
-    GROUPS, Match
+    get_sample_bracket, GROUPS, Match
 )
 
 st.set_page_config(page_title="2026 World Cup Predictor", layout="wide", initial_sidebar_state="expanded")
@@ -60,7 +60,7 @@ with tab1:
             group_teams = GROUPS[group_name]
             group_matches = [m for m in matches if m.stage.endswith(f"({group_name})")]
 
-            cols = st.columns([2, 1, 1, 1, 1])
+            cols = st.columns([2, 1, 1, 1, 1, 1, 1])
             with cols[0]:
                 st.write("**Matchup**")
             with cols[1]:
@@ -70,10 +70,14 @@ with tab1:
             with cols[3]:
                 st.write("**Loss %**")
             with cols[4]:
+                st.write("**xG A**")
+            with cols[5]:
+                st.write("**xG B**")
+            with cols[6]:
                 st.write("**Winner**")
 
             for match in group_matches:
-                cols = st.columns([2, 1, 1, 1, 1])
+                cols = st.columns([2, 1, 1, 1, 1, 1, 1])
                 with cols[0]:
                     flag_a = get_flag_emoji(match.team_a)
                     flag_b = get_flag_emoji(match.team_b)
@@ -85,6 +89,10 @@ with tab1:
                 with cols[3]:
                     st.write(f"{match.p_b*100:.1f}%")
                 with cols[4]:
+                    st.write(f"{match.xg_a:.2f}")
+                with cols[5]:
+                    st.write(f"{match.xg_b:.2f}")
+                with cols[6]:
                     winner_flag = get_flag_emoji(match.predicted_winner())
                     st.write(f"**{winner_flag}**")
 
@@ -142,24 +150,22 @@ with tab2:
         ])
         st.dataframe(contenders_df, hide_index=True, use_container_width=True)
 
-        # Bracket visualization
-        st.subheader("Tournament Stages")
-        stages = [
-            ("Round of 32 (32 teams)", 32),
-            ("Round of 16 (16 teams)", 16),
-            ("Quarterfinals (8 teams)", 8),
-            ("Semifinals (4 teams)", 4),
-            ("Final (2 teams)", 2),
-        ]
+        st.divider()
+        st.subheader("🌳 Example Simulated Bracket Path")
+        st.caption("This shows one potential deterministic path based on the simulation data.")
 
-        for stage_name, num_teams in stages:
-            st.write(f"**{stage_name}**")
-            cols = st.columns(min(num_teams, 4))
-            for i in range(0, num_teams, 2):
-                col_idx = (i // 2) % len(cols)
-                with cols[col_idx]:
-                    st.write(f"Match {i//2 + 1}")
-                    st.caption("(Predictions based on group stage outcomes)")
+        bracket_data = get_sample_bracket(poisson_model, xgboost_model, encoder_dict)
+
+        for stage_name, matches in bracket_data.items():
+            st.markdown(f"#### {stage_name}")
+            cols = st.columns(min(len(matches), 4))
+            for i, match in enumerate(matches):
+                with cols[i % 4]:
+                    team_a_disp = f"**{match['team_a']}**" if match['winner'] == match['team_a'] else match['team_a']
+                    team_b_disp = f"**{match['team_b']}**" if match['winner'] == match['team_b'] else match['team_b']
+                    st.info(f"{get_flag_emoji(match['team_a'])} {team_a_disp}\n\n"
+                            f"{get_flag_emoji(match['team_b'])} {team_b_disp}\n\n"
+                            f"*{match['score']}*")
 
     else:
         st.info("👈 Click 'Run Tournament Simulation' in the sidebar to generate bracket predictions")
