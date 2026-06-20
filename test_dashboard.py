@@ -1,5 +1,6 @@
 import pytest
 import numpy as np
+import tournament as tournament_module
 from dashboard_helpers import load_models, get_group_stage_matches, GROUPS
 from predict_match import predict_single_match
 from tournament import WorldCupSimulator
@@ -87,3 +88,33 @@ def test_simulator_returns_winner_and_bracket(models):
     assert isinstance(winner, str), "Winner must be a string (team name)"
     assert "World Cup Final" in bracket_history, "Bracket history must include the Final"
     assert len(bracket_history["World Cup Final"]) == 1, "Final should only have 1 match"
+
+
+def test_simulator_caches_match_lambdas(monkeypatch):
+    """Repeated matchups should reuse cached lambda values but still simulate fresh scores."""
+    prepare_calls = []
+    original_prepare = tournament_module.prepare_poisson_features
+
+    def counting_prepare(*args, **kwargs):
+        prepare_calls.append(1)
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(tournament_module, "prepare_poisson_features", counting_prepare)
+
+    shared_cache = {}
+    sim = WorldCupSimulator(
+        StubPoissonModel(),
+        StubXGBoostModel(),
+        {},
+        {"Group A": ["Spain", "Germany"]},
+        silent=True,
+        match_cache=shared_cache,
+    )
+
+    sim._simulate_match("Spain", "Germany", "Group Stage", 0.55)
+    sim._simulate_match("Spain", "Germany", "Group Stage", 0.55)
+    sim._simulate_match("Germany", "Spain", "Group Stage", 0.55)
+
+    assert len(prepare_calls) == 1
+    assert ("Spain", "Germany", 0.55) in shared_cache
+    assert ("Germany", "Spain", 0.55) in shared_cache

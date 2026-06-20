@@ -154,7 +154,10 @@ with tab2:
         st.subheader("🌳 Example Simulated Bracket Path")
         st.caption("This shows one potential deterministic path based on the simulation data.")
 
-        bracket_data = get_sample_bracket(poisson_model, xgboost_model, encoder_dict)
+        if 'sample_bracket' not in st.session_state:
+            st.session_state.sample_bracket = get_sample_bracket(poisson_model, xgboost_model, encoder_dict)
+
+        bracket_data = st.session_state.sample_bracket
 
         for stage_name, matches in bracket_data.items():
             st.markdown(f"#### {stage_name}")

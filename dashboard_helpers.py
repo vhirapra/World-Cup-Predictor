@@ -136,9 +136,10 @@ def get_probable_matches(matches: List[Match], top_n: int = 20) -> List[Match]:
 def run_tournament_simulation(poisson_model=None, xgboost_model=None, encoder_dict=None, num_simulations: int = 100) -> Dict[str, float]:
     """Run Monte Carlo tournament simulations and return win probabilities."""
     championship_counts = {}
+    shared_cache = {}
 
     for _ in range(num_simulations):
-        sim = WorldCupSimulator(poisson_model, xgboost_model, encoder_dict, GROUPS, silent=True)
+        sim = WorldCupSimulator(poisson_model, xgboost_model, encoder_dict, GROUPS, silent=True, match_cache=shared_cache)
         winner, _ = sim.run_tournament()
         championship_counts[winner] = championship_counts.get(winner, 0) + 1
 
