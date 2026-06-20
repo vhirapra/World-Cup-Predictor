@@ -8,13 +8,14 @@ from feature_engine import prepare_poisson_features, build_xgboost_features
 
 class WorldCupSimulator:
     # 1. Added 'silent' parameter
-    def __init__(self, poisson_model, xgb_model, encoder_dict, groups_dict, silent=False, match_cache=None):
+    def __init__(self, poisson_model, xgb_model, encoder_dict, groups_dict, silent=False, match_cache=None, deterministic=False):
         self.poisson_model = poisson_model
         self.xgb_model = xgb_model
         self.encoder_dict = encoder_dict
         self.groups = groups_dict
         self.silent = silent 
         self.match_cache = match_cache if match_cache is not None else {}
+        self.deterministic = deterministic
         
         self.teams = [team for group in groups_dict.values() for team in group]
         self.stats = {}
@@ -62,8 +63,20 @@ class WorldCupSimulator:
             self.match_cache[cache_key] = (final_lam_a, final_lam_b)
             self.match_cache[(team_b, team_a, importance_val)] = (final_lam_b, final_lam_a)
         
-        goals_a = np.random.poisson(final_lam_a)
-        goals_b = np.random.poisson(final_lam_b)
+        if self.deterministic:
+            # No dice rolls. Use the rounded expected goals for the most likely path.
+            goals_a = int(round(final_lam_a))
+            goals_b = int(round(final_lam_b))
+
+            if is_knockout and goals_a == goals_b:
+                if final_lam_a > final_lam_b:
+                    goals_a += 1
+                else:
+                    goals_b += 1
+        else:
+            # Standard Monte Carlo randomness.
+            goals_a = np.random.poisson(final_lam_a)
+            goals_b = np.random.poisson(final_lam_b)
 
         self.stats[team_a]['gf'] += goals_a
         self.stats[team_a]['ga'] += goals_b

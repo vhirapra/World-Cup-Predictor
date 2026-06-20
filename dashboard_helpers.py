@@ -168,7 +168,7 @@ def get_flag_emoji(country: str) -> str:
     return flags.get(country, "⚽")
 
 def get_sample_bracket(poisson_model=None, xgboost_model=None, encoder_dict=None):
-    """Runs a single simulation to get a visual representation of a bracket path."""
-    sim = WorldCupSimulator(poisson_model, xgboost_model, encoder_dict, GROUPS, silent=True)
+    """Runs a deterministic simulation to get the mathematically most likely bracket path."""
+    sim = WorldCupSimulator(poisson_model, xgboost_model, encoder_dict, GROUPS, silent=True, deterministic=True)
     winner, bracket_history = sim.run_tournament()
     return bracket_history

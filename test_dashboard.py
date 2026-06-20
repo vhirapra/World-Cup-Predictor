@@ -118,3 +118,33 @@ def test_simulator_caches_match_lambdas(monkeypatch):
     assert len(prepare_calls) == 1
     assert ("Spain", "Germany", 0.55) in shared_cache
     assert ("Germany", "Spain", 0.55) in shared_cache
+
+
+def test_simulator_deterministic_mode_rounds_expected_goals():
+    sim = WorldCupSimulator(
+        StubPoissonModel(),
+        StubXGBoostModel(),
+        {},
+        {"Group A": ["Spain", "Germany"]},
+        silent=True,
+        deterministic=True,
+    )
+
+    goals_a, goals_b, winner = sim._simulate_match("Spain", "Germany", "Group Stage", 0.55)
+
+    assert (goals_a, goals_b, winner) == (2, 2, "Draw")
+
+
+def test_simulator_deterministic_knockout_forces_winner():
+    sim = WorldCupSimulator(
+        StubPoissonModel(),
+        StubXGBoostModel(),
+        {},
+        {"Group A": ["Spain", "Germany"]},
+        silent=True,
+        deterministic=True,
+    )
+
+    goals_a, goals_b, winner = sim._simulate_match("Spain", "Germany", "Round of 16", 0.55, is_knockout=True)
+
+    assert (goals_a, goals_b, winner) == (3, 2, "Spain")
