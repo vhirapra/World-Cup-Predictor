@@ -26,13 +26,25 @@ GROUPS = {
 }
 
 class Match:
-    def __init__(self, team_a: str, team_b: str, stage: str, p_a: float, p_draw: float, p_b: float):
+    def __init__(
+        self,
+        team_a: str,
+        team_b: str,
+        stage: str,
+        p_a: float,
+        p_draw: float,
+        p_b: float,
+        xg_a: float,
+        xg_b: float,
+    ):
         self.team_a = team_a
         self.team_b = team_b
         self.stage = stage
         self.p_a = p_a
         self.p_draw = p_draw
         self.p_b = p_b
+        self.xg_a = xg_a
+        self.xg_b = xg_b
         self.confidence = 1 - (min(p_a, p_b, p_draw) * 2)
         self.competitiveness = abs(p_a - 0.5) if p_a > p_b else abs(p_b - 0.5)
 
@@ -47,6 +59,8 @@ class Match:
             'p_win_a': round(self.p_a * 100, 1),
             'p_draw': round(self.p_draw * 100, 1),
             'p_win_b': round(self.p_b * 100, 1),
+            'xg_a': round(self.xg_a, 2),
+            'xg_b': round(self.xg_b, 2),
             'winner': self.predicted_winner(),
             'confidence': round(self.confidence * 100, 1),
         }
@@ -66,11 +80,11 @@ def get_group_stage_matches(groups: Dict = GROUPS, poisson_model=None, xgboost_m
     matches = []
     for group_name, teams in groups.items():
         for team_a, team_b in combinations(teams, 2):
-            p_a, p_draw, p_b = predict_single_match(
+            p_a, p_draw, p_b, xg_a, xg_b = predict_single_match(
                 poisson_model, xgboost_model, encoder_dict,
                 team_a, team_b, importance_val=0.40
             )
-            match = Match(team_a, team_b, f"Group Stage ({group_name})", p_a, p_draw, p_b)
+            match = Match(team_a, team_b, f"Group Stage ({group_name})", p_a, p_draw, p_b, xg_a, xg_b)
             matches.append(match)
     return matches
 
@@ -82,7 +96,7 @@ def get_group_standings(groups: Dict = GROUPS, poisson_model=None, xgboost_model
         stats = {team: {'pts': 0, 'gf': 0, 'ga': 0} for team in teams}
 
         for team_a, team_b in combinations(teams, 2):
-            p_a, p_draw, p_b = predict_single_match(
+            p_a, p_draw, p_b, xg_a, xg_b = predict_single_match(
                 poisson_model, xgboost_model, encoder_dict,
                 team_a, team_b, importance_val=0.40
             )
@@ -122,10 +136,11 @@ def get_probable_matches(matches: List[Match], top_n: int = 20) -> List[Match]:
 def run_tournament_simulation(poisson_model=None, xgboost_model=None, encoder_dict=None, num_simulations: int = 100) -> Dict[str, float]:
     """Run Monte Carlo tournament simulations and return win probabilities."""
     championship_counts = {}
+    shared_cache = {}
 
     for _ in range(num_simulations):
-        sim = WorldCupSimulator(poisson_model, xgboost_model, encoder_dict, GROUPS, silent=True)
-        winner = sim.run_tournament()
+        sim = WorldCupSimulator(poisson_model, xgboost_model, encoder_dict, GROUPS, silent=True, match_cache=shared_cache)
+        winner, _ = sim.run_tournament()
         championship_counts[winner] = championship_counts.get(winner, 0) + 1
 
     probabilities = {team: (wins / num_simulations) * 100 for team, wins in championship_counts.items()}
@@ -153,7 +168,7 @@ def get_flag_emoji(country: str) -> str:
     return flags.get(country, "⚽")
 
 def get_sample_bracket(poisson_model=None, xgboost_model=None, encoder_dict=None):
-    """Runs a single simulation to get a visual representation of a bracket path."""
-    sim = WorldCupSimulator(poisson_model, xgboost_model, encoder_dict, GROUPS, silent=True)
+    """Runs a deterministic simulation to get the mathematically most likely bracket path."""
+    sim = WorldCupSimulator(poisson_model, xgboost_model, encoder_dict, GROUPS, silent=True, deterministic=True)
     winner, bracket_history = sim.run_tournament()
     return bracket_history

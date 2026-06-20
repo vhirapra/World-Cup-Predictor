@@ -8,12 +8,14 @@ from feature_engine import prepare_poisson_features, build_xgboost_features
 
 class WorldCupSimulator:
     # 1. Added 'silent' parameter
-    def __init__(self, poisson_model, xgb_model, encoder_dict, groups_dict, silent=False):
+    def __init__(self, poisson_model, xgb_model, encoder_dict, groups_dict, silent=False, match_cache=None, deterministic=False):
         self.poisson_model = poisson_model
         self.xgb_model = xgb_model
         self.encoder_dict = encoder_dict
         self.groups = groups_dict
         self.silent = silent 
+        self.match_cache = match_cache if match_cache is not None else {}
+        self.deterministic = deterministic
         
         self.teams = [team for group in groups_dict.values() for team in group]
         self.stats = {}
@@ -33,30 +35,48 @@ class WorldCupSimulator:
             print(message)
 
     def _simulate_match(self, team_a, team_b, stage_name, importance_val, is_knockout=False):
-        future_match = pd.DataFrame([{
-            'date': '2026-06-15', 'home_team': team_a, 'away_team': team_b,
-            'home_score': 0, 'away_score': 0, 'tournament': 'FIFA World Cup', 'neutral': True
-        }])
+        cache_key = (team_a, team_b, importance_val)
+        if cache_key in self.match_cache:
+            final_lam_a, final_lam_b = self.match_cache[cache_key]
+        else:
+            future_match = pd.DataFrame([{
+                'date': '2026-06-15', 'home_team': team_a, 'away_team': team_b,
+                'home_score': 0, 'away_score': 0, 'tournament': 'FIFA World Cup', 'neutral': True
+            }])
 
-        features = prepare_poisson_features(future_match)
-        features['rest_days'] = 5 
-        features['importance_score'] = importance_val
+            features = prepare_poisson_features(future_match)
+            features['rest_days'] = 5 
+            features['importance_score'] = importance_val
+            
+            xgb_df, _ = build_xgboost_features(features, encoder_dict=self.encoder_dict)
+            xgb_df = xgb_df.drop(columns=['goals', 'poisson_residual'], errors='ignore')
+            
+            lam_a_base, lam_b_base = self.poisson_model.predict_expected_goals(team_a, team_b, is_neutral=True)
+            xgb_df['expected_goals'] = [lam_a_base, lam_b_base]
+            xgb_df = xgb_df[self.xgb_model.model.get_booster().feature_names]
+            
+            delta_home = float(self.xgb_model.predict_residual(xgb_df.iloc[[0]])[0])
+            delta_away = float(self.xgb_model.predict_residual(xgb_df.iloc[[1]])[0])
+            
+            final_lam_a = max(0.1, lam_a_base + delta_home)
+            final_lam_b = max(0.1, lam_b_base + delta_away)
+            self.match_cache[cache_key] = (final_lam_a, final_lam_b)
+            self.match_cache[(team_b, team_a, importance_val)] = (final_lam_b, final_lam_a)
         
-        xgb_df, _ = build_xgboost_features(features, encoder_dict=self.encoder_dict)
-        xgb_df = xgb_df.drop(columns=['goals', 'poisson_residual'], errors='ignore')
-        
-        lam_a_base, lam_b_base = self.poisson_model.predict_expected_goals(team_a, team_b, is_neutral=True)
-        xgb_df['expected_goals'] = [lam_a_base, lam_b_base]
-        xgb_df = xgb_df[self.xgb_model.model.get_booster().feature_names]
-        
-        delta_home = float(self.xgb_model.predict_residual(xgb_df.iloc[[0]])[0])
-        delta_away = float(self.xgb_model.predict_residual(xgb_df.iloc[[1]])[0])
-        
-        final_lam_a = max(0.1, lam_a_base + delta_home)
-        final_lam_b = max(0.1, lam_b_base + delta_away)
-        
-        goals_a = np.random.poisson(final_lam_a)
-        goals_b = np.random.poisson(final_lam_b)
+        if self.deterministic:
+            # No dice rolls. Use the rounded expected goals for the most likely path.
+            goals_a = int(round(final_lam_a))
+            goals_b = int(round(final_lam_b))
+
+            if is_knockout and goals_a == goals_b:
+                if final_lam_a > final_lam_b:
+                    goals_a += 1
+                else:
+                    goals_b += 1
+        else:
+            # Standard Monte Carlo randomness.
+            goals_a = np.random.poisson(final_lam_a)
+            goals_b = np.random.poisson(final_lam_b)
 
         self.stats[team_a]['gf'] += goals_a
         self.stats[team_a]['ga'] += goals_b
@@ -91,12 +111,12 @@ class WorldCupSimulator:
     def rank_teams(self, team_list):
         return sorted(team_list, key=lambda x: (self.stats[x]['pts'], self.stats[x]['gf'], self.stats[x]['elo']), reverse=True)
 
-def run_tournament(self):
+    def run_tournament(self):
         self._log("\n" + "="*60)
         self._log("[2026 WORLD CUP MONTE CARLO SIMULATOR]")
         self._log("="*60)
 
-        bracket_history = {} # NEW: Track the matchups
+        bracket_history = {}
 
         group_standings = {}
         for group_name, members in self.groups.items():
@@ -104,7 +124,6 @@ def run_tournament(self):
                 self._simulate_match(t1, t2, "Group Stage", 0.40, is_knockout=False)
             group_standings[group_name] = self.rank_teams(members)
 
-        # ... (Keep the standings logging and top_32_teams logic the same) ...
         first_place = [standings[0] for standings in group_standings.values()]
         second_place = [standings[1] for standings in group_standings.values()]
         third_place = [standings[2] for standings in group_standings.values()]
@@ -124,7 +143,7 @@ def run_tournament(self):
             self._log(f"\n>> {stage_name.upper()}")
             current_survivors = self.rank_teams(current_survivors)
             next_round = []
-            stage_matches = [] # NEW: Track matches for this specific stage
+            stage_matches = []
             
             num_matches = len(current_survivors) // 2
             for i in range(num_matches):
@@ -136,7 +155,6 @@ def run_tournament(self):
                 score_str = f"{g_high} - {g_low}"
                 pk_str = " (PKs)" if g_high == g_low else ""
                 
-                # NEW: Save the match data
                 stage_matches.append({
                     'team_a': high_seed, 'team_b': low_seed,
                     'winner': winner, 'score': score_str + pk_str
@@ -144,10 +162,9 @@ def run_tournament(self):
                 
                 next_round.append(winner)
                 
-            bracket_history[stage_name] = stage_matches # NEW: Save stage to history
+            bracket_history[stage_name] = stage_matches
             current_survivors = next_round
         
-        # RETURN BOTH WINNER AND HISTORY
         return current_survivors[0], bracket_history
 
 # --- NEW ENSEMBLE AGGREGATOR ---
@@ -157,11 +174,12 @@ def run_monte_carlo_ensemble(poisson_model, xgb_model, encoder_dict, groups_dict
     
     championship_counts = Counter()
     start_time = time.time()
+    shared_cache = {}
     
     for i in range(num_simulations):
         # Instantiate a fresh, SILENT simulator on every loop
-        sim = WorldCupSimulator(poisson_model, xgb_model, encoder_dict, groups_dict, silent=True)
-        winner = sim.run_tournament()
+        sim = WorldCupSimulator(poisson_model, xgb_model, encoder_dict, groups_dict, silent=True, match_cache=shared_cache)
+        winner, _ = sim.run_tournament()
         championship_counts[winner] += 1
         
         # Print a progress update every 10%

@@ -193,7 +193,7 @@ def _load_penalty_recklessness():
     except Exception:
         return {}
 
-def prepare_poisson_features(matches_df: pd.DataFrame, date_column: str = 'date', home_col: str = 'home_team', away_col: str = 'away_team', home_goals_col: str = 'home_score', away_goals_col: str = 'away_score', neutral_col: str = 'neutral', decay_lambda: float = 0.0005) -> pd.DataFrame:
+def prepare_poisson_features(matches_df: pd.DataFrame, date_column: str = 'date', home_col: str = 'home_team', away_col: str = 'away_team', home_goals_col: str = 'home_score', away_goals_col: str = 'away_score', neutral_col: str = 'neutral', decay_lambda: float = 0.001) -> pd.DataFrame:
     df = _normalize_columns(matches_df)
     df[date_column] = pd.to_datetime(df[date_column], errors='coerce')
     df = df.dropna(subset=[date_column]).copy()
@@ -229,20 +229,38 @@ def prepare_poisson_features(matches_df: pd.DataFrame, date_column: str = 'date'
         'team': df[home_col], 'opponent': df[away_col], 'team_id': df['home_team_id'], 'opponent_id': df['away_team_id'],
         'tournament': df['tournament'] if 'tournament' in df.columns else pd.NA, 'tournament_id': df['tournament_id'],
         'goals': df[home_goals_col], 'home_indicator': np.where(df[neutral_col], 0, 1), 'date': df[date_column], 'importance_score': df['importance_score'],
+        'opponent_goals': df[away_goals_col],
     })
 
     away_rows = pd.DataFrame({
         'team': df[away_col], 'opponent': df[home_col], 'team_id': df['away_team_id'], 'opponent_id': df['home_team_id'],
         'tournament': df['tournament'] if 'tournament' in df.columns else pd.NA, 'tournament_id': df['tournament_id'],
         'goals': df[away_goals_col], 'home_indicator': 0, 'date': df[date_column], 'importance_score': df['importance_score'],
+        'opponent_goals': df[home_goals_col],
     })
 
     output = pd.concat([home_rows, away_rows], ignore_index=True, sort=False)
 
+    output['goals'] = pd.to_numeric(output['goals'], errors='coerce').fillna(0).astype(int)
+    output['opponent_goals'] = pd.to_numeric(output['opponent_goals'], errors='coerce').fillna(0).astype(int)
+
     output['_original_index'] = np.arange(len(output))
+    reference_date = pd.Timestamp('2026-06-11')
+    output['days_since'] = (reference_date - output['date']).dt.days.clip(lower=0)
+
     output = output.sort_values(['team', 'date'], ascending=[True, True]).copy()
-    output['days_since'] = output.groupby('team')['date'].diff().dt.days.shift(-1).clip(lower=0)
-    output['days_since'] = output['days_since'].fillna(0)
+    output['avg_goals_last_5'] = (
+        output.groupby('team')['goals']
+        .transform(lambda s: s.shift(1).rolling(window=5, min_periods=1).mean())
+        .fillna(0.0)
+    )
+    output['_win'] = (output['goals'] > output['opponent_goals']).astype(int)
+    output['win_pct_last_10'] = (
+        output.groupby('team')['_win']
+        .transform(lambda s: s.shift(1).rolling(window=10, min_periods=1).mean())
+        .fillna(0.0)
+    )
+
     output = output.sort_values('_original_index').drop(columns=['_original_index'])
     output['decay_weight'] = np.exp(-decay_lambda * output['days_since'])
 
@@ -261,8 +279,10 @@ def prepare_poisson_features(matches_df: pd.DataFrame, date_column: str = 'date'
     output['importance_score'] = pd.to_numeric(output['importance_score'], errors='coerce').fillna(0.15)
     output['days_since'] = pd.to_numeric(output['days_since'], errors='coerce').fillna(0).astype(float)
     output['decay_weight'] = pd.to_numeric(output['decay_weight'], errors='coerce').fillna(0.0).astype(float)
+    output['avg_goals_last_5'] = pd.to_numeric(output['avg_goals_last_5'], errors='coerce').fillna(0.0).astype(float)
+    output['win_pct_last_10'] = pd.to_numeric(output['win_pct_last_10'], errors='coerce').fillna(0.0).astype(float)
 
-    columns = ['team', 'opponent', 'goals', 'home_indicator', 'date', 'days_since', 'decay_weight', 'importance_score', 'rest_days', 'tournament', 'tournament_id', 'team_id', 'opponent_id', 'attack_vs_defense_advantage', 'opponent_historical_pens_conceded']
+    columns = ['team', 'opponent', 'goals', 'home_indicator', 'date', 'days_since', 'decay_weight', 'importance_score', 'rest_days', 'tournament', 'tournament_id', 'team_id', 'opponent_id', 'attack_vs_defense_advantage', 'opponent_historical_pens_conceded', 'avg_goals_last_5', 'win_pct_last_10']
     return output[[c for c in columns if c in output.columns]]
 
 
